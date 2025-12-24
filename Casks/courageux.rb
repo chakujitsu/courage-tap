@@ -6,7 +6,7 @@ cask "courageux" do
          intel: "b5f8c4629640db2d16ebd236561e62e8591353f0b63560b02c54c29b7fcc20a0"
 
   # Update these two lines with your repository details
-  url "https://github.com/chakujitsu/bravoure/releases/download/#{version}/Brave-Browser-#{arch}.dmg"
+  url "https://github.com/chakujitsu/bravoure/releases/download/v#{version}/Brave-Browser-#{arch}.dmg"
   homepage "https://github.com/chakujitsu/bravoure"
 
   name "Courageux (Brave Mirror)"
