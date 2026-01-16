@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # Required to create/delete releases
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,44 +19,80 @@ jobs:
         id: brave_info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+
+          echo "Target repo: ${TARGET_REPO}"
+
           # Get the latest release tag from the official Brave repo
           LATEST_TAG=$(gh release view --repo brave/brave-browser --json tagName --template '{{.tagName}}')
-          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
-          
+          echo "LATEST_TAG=$LATEST_TAG" >> "$GITHUB_ENV"
+
           # Check if this tag already exists in YOUR repo
-          EXISTS=$(gh release view $LATEST_TAG >/dev/null 2>&1 && echo "true" || echo "false")
-          echo "EXISTS=$EXISTS" >> $GITHUB_ENV
+          if gh release view "$LATEST_TAG" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+            echo "EXISTS=true" >> "$GITHUB_ENV"
+          else
+            echo "EXISTS=false" >> "$GITHUB_ENV"
+          fi
 
       - name: Mirror Release
         if: env.EXISTS == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+
           echo "New version found: ${{ env.LATEST_TAG }}. Mirroring..."
-          
+
+          rm -rf ./downloads
+          mkdir -p ./downloads
+
           # 1. Download only .dmg assets from Brave
-          gh release download ${{ env.LATEST_TAG }} \
+          gh release download "${{ env.LATEST_TAG }}" \
             --repo brave/brave-browser \
             --pattern "*.dmg" \
             --dir ./downloads
 
+          # Safety: ensure we actually downloaded something
+          shopt -s nullglob
+          DMGS=(./downloads/*.dmg)
+          if [ ${#DMGS[@]} -eq 0 ]; then
+            echo "No .dmg assets found for tag ${{ env.LATEST_TAG }}; skipping release creation."
+            exit 0
+          fi
+
           # 2. Create the release in your repo
-          gh release create ${{ env.LATEST_TAG }} \
-            ./downloads/*.dmg \
+          gh release create "${{ env.LATEST_TAG }}" \
+            "${DMGS[@]}" \
+            --repo "${TARGET_REPO}" \
             --title "Brave Browser ${{ env.LATEST_TAG }}" \
             --notes "Automated mirror of Brave Browser macOS release ${{ env.LATEST_TAG }}."
 
       - name: Cleanup Old Releases (Keep N-1)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+
           echo "Cleaning up old releases, keeping only the 2 most recent..."
-          
-          # List all releases, skip the first 2 (n and n-1), and delete the rest
-          RELEASES_TO_DELETE=$(gh release list --limit 100 | tail -n +3 | awk '{print $1}')
-          
-          for TAG in $RELEASES_TO_DELETE; do
+
+          # Pull tag names via JSON (avoid fragile table parsing).
+          # Keep first 2 releases, delete the rest.
+          RELEASES_TO_DELETE=$(gh release list --repo "${TARGET_REPO}" --limit 100 --json tagName --jq '.[2:] | .[].tagName')
+
+          if [ -z "${RELEASES_TO_DELETE}" ]; then
+            echo "Nothing to delete."
+            exit 0
+          fi
+
+          while IFS= read -r TAG; do
+            [ -z "$TAG" ] && continue
             echo "Deleting old release: $TAG"
-            gh release delete $TAG --yes --cleanup-tag
-          done
+
+            # Non-fatal if something disappears between list/delete
+            gh release delete "$TAG" --repo "${TARGET_REPO}" --yes --cleanup-tag || \
+              echo "Skip: $TAG not found (already deleted?)"
+          done <<< "${RELEASES_TO_DELETE}"
