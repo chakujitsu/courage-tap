@@ -1,0 +1,42 @@
+name: Force Update Cask
+
+on:
+  workflow_dispatch:
+
+jobs:
+  force:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Force sync cask to latest mirrored release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ github.repository }}
+          CASK_FILE: Casks/courageux.rb
+        run: |
+          set -euo pipefail
+          test -f "${CASK_FILE}" || { echo "Missing ${CASK_FILE}"; exit 1; }
+
+          # Latest tag in your repo (mirror)
+          LATEST_TAG="$(gh release list --repo "${TARGET_REPO}" --limit 1 --json tagName --jq '.[0].tagName')"
+          VERSION="${LATEST_TAG#v}"
+
+          echo "Using mirror latest tag: ${LATEST_TAG} (version ${VERSION})"
+
+          rm -rf ./downloads && mkdir -p ./downloads
+          gh release download "${LATEST_TAG}" --repo "${TARGET_REPO}" --pattern "Brave-Browser-*.dmg" --dir ./downloads
+
+          test -f "./downloads/Brave-Browser-arm64.dmg"
+          test -f "./downloads/Brave-Browser-x64.dmg"
+
+          ARM_SHA="$(sha256sum ./downloads/Brave-Browser-arm64.dmg | awk '{print $1}')"
+          INTEL_SHA="$(sha256sum ./downloads/Brave-Browser-x64.dmg | awk '{print $1}')"
+
+          ruby -i -pe "
+            \$_ = \"  version \\\"${VERSION}\\\"\\n\" if \$_ =~ /^  version \"/
+            \$_ = \"  sha256 arm:   \\\"${ARM_SHA}\\\",\\n\" if \$_ =~ /^  sha256 arm:/
+            \$_ = \"         intel: \\\"${INTEL_SHA}\\\"\\n\" if \$_ =~ /^         intel:/
+          " "${CASK_FIL_
