@@ -15,12 +15,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ github.repository }}
-          CASK_FILE: Casks/courageux.rb
+          CASK_FILE: Casks/courageux.rb   # <-- adjust if needed
         run: |
           set -euo pipefail
+
           test -f "${CASK_FILE}" || { echo "Missing ${CASK_FILE}"; exit 1; }
 
-          # Latest tag in your repo (mirror)
           LATEST_TAG="$(gh release list --repo "${TARGET_REPO}" --limit 1 --json tagName --jq '.[0].tagName')"
           VERSION="${LATEST_TAG#v}"
 
@@ -35,8 +35,47 @@ jobs:
           ARM_SHA="$(sha256sum ./downloads/Brave-Browser-arm64.dmg | awk '{print $1}')"
           INTEL_SHA="$(sha256sum ./downloads/Brave-Browser-x64.dmg | awk '{print $1}')"
 
-          ruby -i -pe "
-            \$_ = \"  version \\\"${VERSION}\\\"\\n\" if \$_ =~ /^  version \"/
-            \$_ = \"  sha256 arm:   \\\"${ARM_SHA}\\\",\\n\" if \$_ =~ /^  sha256 arm:/
-            \$_ = \"         intel: \\\"${INTEL_SHA}\\\"\\n\" if \$_ =~ /^         intel:/
-          " "${CASK_FIL_
+          echo "ARM_SHA=$ARM_SHA"
+          echo "INTEL_SHA=$INTEL_SHA"
+
+          export VERSION ARM_SHA INTEL_SHA CASK_FILE
+
+          ruby <<'RUBY'
+          cask_file = ENV.fetch("CASK_FILE")
+          version   = ENV.fetch("VERSION")
+          arm_sha   = ENV.fetch("ARM_SHA")
+          intel_sha = ENV.fetch("INTEL_SHA")
+
+          txt = File.read(cask_file)
+
+          # Update version
+          txt.sub!(/^(\s*version\s+")([^"]+)(")/, "\\1#{version}\\3") or
+            abort("ERROR: version line not found / not updated")
+
+          # Update sha256 (arm)
+          txt.sub!(/^(\s*sha256\s+arm:\s+")([a-f0-9]{64})(",)/i, "\\1#{arm_sha}\\3") or
+            abort("ERROR: sha256 arm line not found / not updated")
+
+          # Update sha256 (intel)
+          txt.sub!(/^(\s*intel:\s+")([a-f0-9]{64})(")/i, "\\1#{intel_sha}\\3") or
+            abort("ERROR: sha256 intel line not found / not updated")
+
+          File.write(cask_file, txt)
+          puts "Updated #{cask_file} to version #{version}"
+          RUBY
+
+          # Show the important lines (debug-friendly)
+          echo "---- Updated cask header ----"
+          grep -nE '^\s*version\s+"|^\s*sha256\s+arm:|^\s*intel:\s+"' "${CASK_FILE}" | head -n 10
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${CASK_FILE}"
+
+          if git diff --cached --quiet; then
+            echo "ERROR: No staged changes. Cask update did not apply."
+            exit 1
+          fi
+
+          git commit -m "Force update cask to Brave ${VERSION}"
+          git push
