@@ -16,7 +16,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Fetch Latest Brave Release Info
-        id: brave_info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ github.repository }}
@@ -28,7 +27,6 @@ jobs:
           LATEST_TAG="$(gh release view --repo brave/brave-browser --json tagName --template '{{.tagName}}')"
           echo "LATEST_TAG=$LATEST_TAG" >> "$GITHUB_ENV"
 
-          # Normalize: VERSION = tag without leading 'v'
           VERSION="${LATEST_TAG#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
@@ -38,7 +36,7 @@ jobs:
             echo "EXISTS=false" >> "$GITHUB_ENV"
           fi
 
-      - name: Mirror + Update Cask + Release
+      - name: Mirror Release (only if missing)
         if: env.EXISTS == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -46,12 +44,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "New version found: ${LATEST_TAG} (version: ${VERSION})"
+          echo "New tag not mirrored yet: ${LATEST_TAG}. Mirroring DMGs..."
 
           rm -rf ./downloads
           mkdir -p ./downloads
 
-          # Download only the architecture-specific macOS DMGs
           gh release download "${LATEST_TAG}" \
             --repo brave/brave-browser \
             --pattern "Brave-Browser-arm64.dmg" \
@@ -62,48 +59,9 @@ jobs:
             --pattern "Brave-Browser-x64.dmg" \
             --dir ./downloads
 
-          # Safety checks
           test -f "./downloads/Brave-Browser-arm64.dmg"
           test -f "./downloads/Brave-Browser-x64.dmg"
 
-          # Compute SHA256
-          ARM_SHA="$(sha256sum ./downloads/Brave-Browser-arm64.dmg | awk '{print $1}')"
-          INTEL_SHA="$(sha256sum ./downloads/Brave-Browser-x64.dmg | awk '{print $1}')"
-
-          echo "ARM_SHA=$ARM_SHA"
-          echo "INTEL_SHA=$INTEL_SHA"
-
-          # Patch the cask file in-place
-          CASK_FILE="Casks/courageux.rb"
-          if [ ! -f "$CASK_FILE" ]; then
-            echo "ERROR: Expected cask at $CASK_FILE but file not found."
-            echo "Adjust CASK_FILE in workflow to match your repo layout."
-            exit 1
-          fi
-
-          # 1) Update version line
-          sed -i.bak -E "s/^  version \".*\"/  version \"${VERSION}\"/" "$CASK_FILE"
-
-          # 2) Update sha256 block (assumes same formatting you pasted)
-          # Replace the arm sha line
-          sed -i.bak -E "s/^  sha256 arm:   \"[a-f0-9]{64}\",/  sha256 arm:   \"${ARM_SHA}\",/" "$CASK_FILE"
-          # Replace the intel sha line
-          sed -i.bak -E "s/^         intel: \"[a-f0-9]{64}\"/         intel: \"${INTEL_SHA}\"/" "$CASK_FILE"
-
-          # 3) Ensure URL points at v#{version} (not major_minor_patch)
-          # Replace your current URL line (safe even if already correct)
-          sed -i.bak -E 's|^  url "https://github.com/[^"]+/releases/download/[^"]+/Brave-Browser-#\{arch\}\.dmg"$|  url "https://github.com/chakujitsu/courage-tap/releases/download/v#{version}/Brave-Browser-#{arch}.dmg"|' "$CASK_FILE"
-
-          rm -f "${CASK_FILE}.bak"
-
-          # Commit the cask bump
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$CASK_FILE"
-          git commit -m "Update cask to Brave ${VERSION}" || echo "No cask changes to commit."
-          git push
-
-          # Create release in your repo using the SAME tag as upstream (vX.Y.Z)
           gh release create "${LATEST_TAG}" \
             ./downloads/Brave-Browser-arm64.dmg \
             ./downloads/Brave-Browser-x64.dmg \
@@ -111,7 +69,82 @@ jobs:
             --title "Brave Browser ${VERSION}" \
             --notes "Automated mirror of Brave Browser macOS release ${LATEST_TAG}."
 
-      - name: Cleanup Old Releases (Keep N-1)
+      - name: Sync Cask to Upstream Latest (always)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ github.repository }}
+          CASK_FILE: Casks/courageux.rb
+        run: |
+          set -euo pipefail
+
+          test -f "${CASK_FILE}" || { echo "ERROR: Missing ${CASK_FILE}"; exit 1; }
+
+          # Read current cask version
+          CURRENT_VERSION="$(ruby -ne 'puts $1 if $_ =~ /^\s*version\s+"([^"]+)"/' "${CASK_FILE}" | head -n1 || true)"
+          echo "Cask current version: ${CURRENT_VERSION:-<none>}"
+          echo "Upstream version:      ${VERSION}"
+
+          if [ "${CURRENT_VERSION}" = "${VERSION}" ]; then
+            echo "Cask already matches latest. Skipping update."
+            exit 0
+          fi
+
+          rm -rf ./downloads && mkdir -p ./downloads
+
+          # Prefer DMGs from your mirror release if it exists; otherwise upstream
+          if gh release view "${LATEST_TAG}" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
+            echo "Downloading DMGs from MIRROR release ${LATEST_TAG}..."
+            gh release download "${LATEST_TAG}" --repo "${TARGET_REPO}" --pattern "Brave-Browser-*.dmg" --dir ./downloads
+          else
+            echo "Mirror release missing; downloading DMGs from UPSTREAM ${LATEST_TAG}..."
+            gh release download "${LATEST_TAG}" --repo brave/brave-browser --pattern "Brave-Browser-*.dmg" --dir ./downloads
+          fi
+
+          test -f "./downloads/Brave-Browser-arm64.dmg"
+          test -f "./downloads/Brave-Browser-x64.dmg"
+
+          ARM_SHA="$(sha256sum ./downloads/Brave-Browser-arm64.dmg | awk '{print $1}')"
+          INTEL_SHA="$(sha256sum ./downloads/Brave-Browser-x64.dmg | awk '{print $1}')"
+
+          echo "ARM_SHA=$ARM_SHA"
+          echo "INTEL_SHA=$INTEL_SHA"
+
+          export VERSION ARM_SHA INTEL_SHA CASK_FILE
+
+          ruby <<'RUBY'
+          cask_file = ENV.fetch("CASK_FILE")
+          version   = ENV.fetch("VERSION")
+          arm_sha   = ENV.fetch("ARM_SHA")
+          intel_sha = ENV.fetch("INTEL_SHA")
+
+          txt = File.read(cask_file)
+
+          txt.sub!(/^(\s*version\s+")([^"]+)(")/, "\\1#{version}\\3") or
+            abort("ERROR: version line not found / not updated")
+
+          txt.sub!(/^(\s*sha256\s+arm:\s+")([a-f0-9]{64})(",)/i, "\\1#{arm_sha}\\3") or
+            abort("ERROR: sha256 arm line not found / not updated")
+
+          txt.sub!(/^(\s*intel:\s+")([a-f0-9]{64})(")/i, "\\1#{intel_sha}\\3") or
+            abort("ERROR: sha256 intel line not found / not updated")
+
+          File.write(cask_file, txt)
+          puts "Updated #{cask_file} to version #{version}"
+          RUBY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${CASK_FILE}"
+
+          if git diff --cached --quiet; then
+            echo "ERROR: No staged changes; cask update failed."
+            exit 1
+          fi
+
+          git commit -m "Update cask to Brave ${VERSION}"
+          git push
+
+      - name: Cleanup Old Releases (Keep 2 most recent)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ github.repository }}
