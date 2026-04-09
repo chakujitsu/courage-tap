@@ -1,9 +1,9 @@
 cask "courageux" do
   arch arm: "arm64", intel: "x64"
 
-  version "1.88.138"
-  sha256 arm:   "74a44f8937606ddbd206d331ab0879bd5cbd0ccc84d1f6401ba884d40939ccd7",
-         intel: "2e04f3ff5d94c90800bd2ac1cc59f5e504700381a31a1caf2c8dd0be2a0f3b80"
+  version "1.89.132"
+  sha256 arm:   "28c566312b6bc4bbbab8af0a1ffdf409645dfcd596a514273baa4641ec57c27a",
+         intel: "0db813a4afed9b175fe05dc393e439d1c50e88b4cfbe287812721bb7c90df4d8"
 
   # Update these two lines with your repository details
   url "https://github.com/chakujitsu/courage-tap/releases/download/v#{version}/Brave-Browser-#{arch}.dmg"
