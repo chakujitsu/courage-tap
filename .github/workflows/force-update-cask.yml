@@ -3,19 +3,22 @@ name: Force Update Cask
 on:
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   force:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Force sync cask to latest mirrored release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ github.repository }}
-          CASK_FILE: Casks/courageux.rb   # <-- adjust if needed
+          CASK_FILE: Casks/courageux.rb
         run: |
           set -euo pipefail
 
