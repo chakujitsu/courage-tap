@@ -5,7 +5,6 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
-# Forces all JavaScript actions to run on the Node 24 runtime
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
@@ -34,14 +33,27 @@ jobs:
           VERSION="${LATEST_TAG#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
+          # 1. Check if the Mac DMGs actually exist upstream yet
+          echo "Checking if Mac assets exist upstream for ${LATEST_TAG}..."
+          UPSTREAM_ASSETS="$(gh release view "${LATEST_TAG}" --repo brave/brave-browser --json assets --jq '.assets[].name')"
+          
+          if echo "$UPSTREAM_ASSETS" | grep -q "Brave-Browser-arm64.dmg" && echo "$UPSTREAM_ASSETS" | grep -q "Brave-Browser-x64.dmg"; then
+            echo "MAC_ASSETS_READY=true" >> "$GITHUB_ENV"
+            echo "Upstream Mac assets found."
+          else
+            echo "MAC_ASSETS_READY=false" >> "$GITHUB_ENV"
+            echo "Upstream Mac assets are missing. Skipping this run until Brave uploads them."
+          fi
+
+          # 2. Check if we already mirrored this tag
           if gh release view "$LATEST_TAG" --repo "${TARGET_REPO}" >/dev/null 2>&1; then
             echo "EXISTS=true" >> "$GITHUB_ENV"
           else
             echo "EXISTS=false" >> "$GITHUB_ENV"
           fi
 
-      - name: Mirror Release (only if missing)
-        if: env.EXISTS == 'false'
+      - name: Mirror Release (only if missing & upstream assets exist)
+        if: env.EXISTS == 'false' && env.MAC_ASSETS_READY == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ github.repository }}
@@ -73,7 +85,8 @@ jobs:
             --title "Brave Browser ${VERSION}" \
             --notes "Automated mirror of Brave Browser macOS release ${LATEST_TAG}."
 
-      - name: Sync Cask to Upstream Latest (always)
+      - name: Sync Cask to Upstream Latest (only if upstream assets exist)
+        if: env.MAC_ASSETS_READY == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ github.repository }}
@@ -149,6 +162,7 @@ jobs:
           git push
 
       - name: Cleanup Old Releases (Keep 2 most recent)
+        if: env.MAC_ASSETS_READY == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ github.repository }}
